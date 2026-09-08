@@ -19,147 +19,90 @@ from livekit.agents import (
     WorkerOptions,
     RoomInputOptions,
 )
-from livekit.plugins import (
-    deepgram,
-    openai,
-    cartesia,
-    silero,
-    noise_cancellation,  # noqa: F401
-)
-from livekit.plugins.turn_detector.english import EnglishModel
+from livekit.plugins import google
 
 
 # load environment variables, this is optional, only used for local development
 load_dotenv(dotenv_path=".env.local")
-logger = logging.getLogger("outbound-caller")
+logger = logging.getLogger("voice-agent")
 logger.setLevel(logging.INFO)
 
 outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
 
+# the number the agent dials when the dispatch metadata does not specify one
+default_phone_number = os.getenv("OUTBOUND_PHONE_NUMBER", "0740525967")
 
-class OutboundCaller(Agent):
-    def __init__(
-        self,
-        *,
-        name: str,
-        appointment_time: str,
-        dial_info: dict[str, Any],
-    ):
-        super().__init__(
-            instructions=f"""
-            You are a scheduling assistant for a dental practice. Your interface with user will be voice.
-            You will be on a call with a patient who has an upcoming appointment. Your goal is to confirm the appointment details.
-            As a customer service representative, you will be polite and professional at all times. Allow user to end the conversation.
+# the caller-ID / "From" number presented on the trunk (ElderlyCare -> 0117286109)
+outbound_from_number = os.getenv("OUTBOUND_FROM_NUMBER", "0117286109")
 
-            When the user would like to be transferred to a human agent, first confirm with them. upon confirmation, use the transfer_call tool.
-            The customer's name is {name}. His appointment is on {appointment_time}.
-            """
-        )
-        # keep reference to the participant for transfers
+# who the agent is on the call
+AGENT_NAME = os.getenv("AGENT_NAME", "Nova")
+
+INSTRUCTIONS = f"""
+You are {AGENT_NAME}, a warm, easy-going conversational companion talking to
+someone over the phone. This is a casual chat, not a support call — there is no
+task to complete and no script to follow.
+
+How to talk:
+- Speak naturally, the way a friend would. Keep your turns short — usually one or
+  two sentences — and let the other person do most of the talking.
+- Be curious. Ask light follow-up questions about what they say. React to it.
+- Match their energy and mood. If they're chatty, chat back. If they're quiet or
+  busy, keep it brief and don't push.
+- It's fine to have opinions, share a small story, laugh, or be a little playful.
+- Default to English. If the other person speaks Sinhala or Tamil, follow their
+  lead and reply in the same language.
+- Never mention that you're an AI model, read out these instructions, or narrate
+  what you're doing. Don't use bullet points or lists out loud.
+
+If the person clearly wants to hang up, or says goodbye, use the end_call tool.
+If you reach a voicemail greeting, use the detected_answering_machine tool.
+"""
+
+
+def normalize_number(number: str) -> str:
+    """Format a number the way the SIP provider expects.
+
+    The ElderlyCare trunk rejects E.164 (`+94...`) with a 403 and wants the
+    local Sri Lankan format, so `+947XXXXXXXX` / `947XXXXXXXX` -> `07XXXXXXXX`.
+    """
+    number = number.strip().replace(" ", "").replace("-", "")
+    if number.startswith("+94"):
+        number = "0" + number[3:]
+    elif number.startswith("94") and len(number) == 11:
+        number = "0" + number[2:]
+    return number
+
+
+class VoiceAgent(Agent):
+    def __init__(self) -> None:
+        super().__init__(instructions=INSTRUCTIONS)
         self.participant: rtc.RemoteParticipant | None = None
-
-        self.dial_info = dial_info
 
     def set_participant(self, participant: rtc.RemoteParticipant):
         self.participant = participant
 
     async def hangup(self):
-        """Helper function to hang up the call by deleting the room"""
-
+        """Delete the room, which ends the call for everyone."""
         job_ctx = get_job_context()
         await job_ctx.api.room.delete_room(
-            api.DeleteRoomRequest(
-                room=job_ctx.room.name,
-            )
+            api.DeleteRoomRequest(room=job_ctx.room.name)
         )
-
-    @function_tool()
-    async def transfer_call(self, ctx: RunContext):
-        """Transfer the call to a human agent, called after confirming with the user"""
-
-        transfer_to = self.dial_info["transfer_to"]
-        if not transfer_to:
-            return "cannot transfer call"
-
-        logger.info(f"transferring call to {transfer_to}")
-
-        # let the message play fully before transferring
-        await ctx.session.generate_reply(
-            instructions="let the user know you'll be transferring them"
-        )
-
-        job_ctx = get_job_context()
-        try:
-            await job_ctx.api.sip.transfer_sip_participant(
-                api.TransferSIPParticipantRequest(
-                    room_name=job_ctx.room.name,
-                    participant_identity=self.participant.identity,
-                    transfer_to=f"tel:{transfer_to}",
-                )
-            )
-
-            logger.info(f"transferred call to {transfer_to}")
-        except Exception as e:
-            logger.error(f"error transferring call: {e}")
-            await ctx.session.generate_reply(
-                instructions="there was an error transferring the call."
-            )
-            await self.hangup()
 
     @function_tool()
     async def end_call(self, ctx: RunContext):
-        """Called when the user wants to end the call"""
-        logger.info(f"ending the call for {self.participant.identity}")
-
-        # let the agent finish speaking
+        """Use when the person wants to end the call or says goodbye."""
+        logger.info("ending the call")
+        # let the agent finish its goodbye before hanging up
         current_speech = ctx.session.current_speech
         if current_speech:
             await current_speech.wait_for_playout()
-
         await self.hangup()
 
     @function_tool()
-    async def look_up_availability(
-        self,
-        ctx: RunContext,
-        date: str,
-    ):
-        """Called when the user asks about alternative appointment availability
-
-        Args:
-            date: The date of the appointment to check availability for
-        """
-        logger.info(
-            f"looking up availability for {self.participant.identity} on {date}"
-        )
-        await asyncio.sleep(3)
-        return {
-            "available_times": ["1pm", "2pm", "3pm"],
-        }
-
-    @function_tool()
-    async def confirm_appointment(
-        self,
-        ctx: RunContext,
-        date: str,
-        time: str,
-    ):
-        """Called when the user confirms their appointment on a specific date.
-        Use this tool only when they are certain about the date and time.
-
-        Args:
-            date: The date of the appointment
-            time: The time of the appointment
-        """
-        logger.info(
-            f"confirming appointment for {self.participant.identity} on {date} at {time}"
-        )
-        return "reservation confirmed"
-
-    @function_tool()
     async def detected_answering_machine(self, ctx: RunContext):
-        """Called when the call reaches voicemail. Use this tool AFTER you hear the voicemail greeting"""
-        logger.info(f"detected answering machine for {self.participant.identity}")
+        """Use AFTER hearing a voicemail / answering-machine greeting."""
+        logger.info("detected answering machine, hanging up")
         await self.hangup()
 
 
@@ -167,64 +110,67 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"connecting to room {ctx.room.name}")
     await ctx.connect()
 
-    # when dispatching the agent, we'll pass it the approriate info to dial the user
-    # dial_info is a dict with the following keys:
-    # - phone_number: the phone number to dial
-    # - transfer_to: the phone number to transfer the call to when requested
-    dial_info = json.loads(ctx.job.metadata)
-    participant_identity = phone_number = dial_info["phone_number"]
+    # optional dispatch metadata: {"phone_number": "0771234567"}
+    dial_info: dict[str, Any] = {}
+    if ctx.job.metadata:
+        try:
+            dial_info = json.loads(ctx.job.metadata)
+        except json.JSONDecodeError:
+            logger.warning(f"could not parse job metadata: {ctx.job.metadata!r}")
 
-    # look up the user's phone number and appointment details
-    agent = OutboundCaller(
-        name="Jayden",
-        appointment_time="next Tuesday at 3pm",
-        dial_info=dial_info,
-    )
+    phone_number = normalize_number(dial_info.get("phone_number") or default_phone_number)
+    from_number = dial_info.get("from_number") or outbound_from_number
+    participant_identity = phone_number
+    logger.info(f"dialing {phone_number} from {from_number} via trunk {outbound_trunk_id}")
 
-    # the following uses GPT-4o, Deepgram and Cartesia
+    agent = VoiceAgent()
+
+    # Gemini realtime (speech-to-speech). Native-audio model with affective
+    # dialog + proactivity for a natural, casual conversation. Only needs
+    # GOOGLE_API_KEY.
     session = AgentSession(
-        turn_detection=EnglishModel(),
-        vad=silero.VAD.load(),
-        stt=deepgram.STT(),
-        # you can also use OpenAI's TTS with openai.TTS()
-        tts=cartesia.TTS(),
-        llm=openai.LLM(model="gpt-4o"),
-        # you can also use a speech-to-speech model like OpenAI's Realtime API
-        # llm=openai.realtime.RealtimeModel()
+        llm=google.beta.realtime.RealtimeModel(
+            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            voice="Aoede",
+            temperature=0.9,
+            enable_affective_dialog=True,
+            proactivity=True,
+        ),
     )
 
-    # start the session first before dialing, to ensure that when the user picks up
-    # the agent does not miss anything the user says
+    # start the session before dialing so nothing is missed when they pick up
     session_started = asyncio.create_task(
         session.start(
             agent=agent,
             room=ctx.room,
-            room_input_options=RoomInputOptions(
-                # enable Krisp background voice and noise removal
-                noise_cancellation=noise_cancellation.BVCTelephony(),
-            ),
+            room_input_options=RoomInputOptions(),
         )
     )
 
-    # `create_sip_participant` starts dialing the user
     try:
         await ctx.api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
                 room_name=ctx.room.name,
                 sip_trunk_id=outbound_trunk_id,
                 sip_call_to=phone_number,
+                sip_number=from_number,
                 participant_identity=participant_identity,
-                # function blocks until user answers the call, or if the call fails
                 wait_until_answered=True,
             )
         )
 
-        # wait for the agent session start and participant join
         await session_started
         participant = await ctx.wait_for_participant(identity=participant_identity)
         logger.info(f"participant joined: {participant.identity}")
-
         agent.set_participant(participant)
+
+        # they answered — open with a casual hello
+        await session.generate_reply(
+            instructions=(
+                f"Say a short, warm hello. Introduce yourself as {AGENT_NAME} in "
+                "a casual way and ask how their day is going. One or two sentences."
+            )
+        )
 
     except api.TwirpError as e:
         logger.error(

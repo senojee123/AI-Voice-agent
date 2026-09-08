@@ -12,22 +12,26 @@
   <a href="https://blog.livekit.io/">Blog</a>
 </p>
 
-This example demonstrates an full workflow of an AI agent that makes outbound calls. It uses LiveKit SIP and Python [Agents Framework](https://github.com/livekit/agents).
+An AI **voice agent** that places an outbound phone call and has a casual,
+back-and-forth conversation with whoever answers. It uses LiveKit SIP and the
+Python [Agents Framework](https://github.com/livekit/agents).
 
-It can use a pipeline of STT, LLM, and TTS models, or a realtime speech-to-speech model. (such as ones from OpenAI and Gemini).
+The voice is Google's **Gemini realtime** native-audio model
+(`livekit-plugins-google`) with affective dialog + proactivity enabled, so it
+sounds natural and reacts to tone. It only needs a `GOOGLE_API_KEY`. Calls go out
+over the `ElderlyCare` SIP trunk (`ST_CTjL7C7PrnZk`) to `+94740525967` by default.
 
-This example builds on concepts from the [Outbound Calls](https://docs.livekit.io/agents/start/telephony/#outbound-calls) section of the docs. Ensure that a SIP outbound trunk is configured before proceeding.
+This builds on the [Outbound Calls](https://docs.livekit.io/agents/start/telephony/#outbound-calls)
+docs. A SIP outbound trunk must already be configured.
 
 ## Features
 
-This example demonstrates the following features:
-
-- Making outbound calls
-- Detecting voicemail
-- Looking up availability via function calling
-- Transferring to a human operator
-- Detecting intent to end the call
-- Uses Krisp background voice cancellation to handle noisy environments
+- Places outbound calls and opens with a warm hello
+- Casual open-ended conversation (Gemini native audio, affective + proactive)
+- Follows the other person's language (English / Sinhala / Tamil)
+- Hangs up when the person says goodbye (`end_call`) or on voicemail
+  (`detected_answering_machine`)
+- Persona/name configurable via the `AGENT_NAME` env var
 
 ## Dev Setup
 
@@ -47,26 +51,50 @@ Set up the environment by copying `.env.example` to `.env.local` and filling in 
 - `LIVEKIT_URL`
 - `LIVEKIT_API_KEY`
 - `LIVEKIT_API_SECRET`
-- `OPENAI_API_KEY`
+- `GOOGLE_API_KEY` - Gemini API key from https://aistudio.google.com/apikey (paste it exactly - a stray trailing `.` causes a 401)
 - `SIP_OUTBOUND_TRUNK_ID`
-- `DEEPGRAM_API_KEY` - optional, only needed when using pipelined models
-- `CARTESIA_API_KEY` - optional, only needed when using pipelined models
+- `OUTBOUND_PHONE_NUMBER` - default number to call. The ElderlyCare trunk rejects
+  `+E.164` with a 403, so use local format (`0740525967`); `+94...` is auto-converted.
+- `OUTBOUND_FROM_NUMBER` - caller-ID number on the trunk (`0117286109`)
+- `AGENT_NAME` - optional, what the agent calls itself on the call (default `Nova`)
 
-Run the agent:
+To change the agent's personality, edit `INSTRUCTIONS` near the top of `agent.py`.
+To change the voice, edit `voice=` in `agent.py` (Gemini voices: `Aoede`, `Puck`,
+`Charon`, `Kore`, `Fenrir`, `Leda`, `Orus`, `Zephyr`, ...).
 
-```shell
-python3 agent.py dev
+### Placing a call from your machine (Windows / PowerShell)
+
+**1. Start the worker** and leave it running (one window):
+
+```powershell
+.\start-agent.ps1        # or:  python agent.py dev
 ```
 
-Now, your worker is running, and waiting for dispatches in order to make outbound calls.
+It prints `registered worker` once connected. Keep this window open — it must
+stay running to handle calls.
 
-### Making a call
+**2. Place a call** from a second window:
 
-You can dispatch an agent to make a call by using the `lk` CLI:
+```powershell
+.\call.ps1                      # dials OUTBOUND_PHONE_NUMBER (+94740525967)
+.\call.ps1 0740525967           # dials a specific number
+.\call.ps1 +94740525967         # +E.164 is auto-converted to local format
+.\call.ps1 0740525967 -TransferTo 0112345678
+```
+
+`call.ps1` reads the LiveKit credentials from `.env.local` and dispatches the
+job; the worker window then logs `dialing ... via trunk ...` and the target
+phone rings. The agent greets first when you answer.
+
+### Making a call with the raw CLI
+
+`call.ps1` just wraps this:
 
 ```shell
-lk dispatch create \
-  --new-room \
-  --agent-name outbound-caller \
-  --metadata '{"phone_number": "+1234567890", "transfer_to": "+9876543210"}'
+lk dispatch create --new-room --agent-name outbound-caller
+# or target a number / set a transfer destination:
+lk dispatch create --new-room --agent-name outbound-caller \
+  --metadata '{"phone_number": "0740525967", "transfer_to": "0112345678"}'
 ```
+
+(the `lk` CLI needs `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` in the environment)
