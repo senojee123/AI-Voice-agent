@@ -12,26 +12,29 @@
   <a href="https://blog.livekit.io/">Blog</a>
 </p>
 
-An AI **voice agent** that places an outbound phone call and has a casual,
-back-and-forth conversation with whoever answers. It uses LiveKit SIP and the
-Python [Agents Framework](https://github.com/livekit/agents).
+An AI **voice assistant** that places an outbound phone call and answers the
+questions and requests of whoever picks up. It uses LiveKit SIP and the Python
+[Agents Framework](https://github.com/livekit/agents).
 
 The voice is Google's **Gemini realtime** native-audio model
-(`livekit-plugins-google`) with affective dialog + proactivity enabled, so it
-sounds natural and reacts to tone. It only needs a `GOOGLE_API_KEY`. Calls go out
-over the `ElderlyCare` SIP trunk (`ST_CTjL7C7PrnZk`) to `+94740525967` by default.
+(`livekit-plugins-google`), speech-to-speech. It only needs a `GOOGLE_API_KEY`.
+Calls go out over the `ElderlyCare` SIP trunk (`ST_CTjL7C7PrnZk`) to
+`+94740525967` by default.
 
 This builds on the [Outbound Calls](https://docs.livekit.io/agents/start/telephony/#outbound-calls)
 docs. A SIP outbound trunk must already be configured.
 
 ## Features
 
-- Places outbound calls and opens with a warm hello
-- Casual open-ended conversation (Gemini native audio, affective + proactive)
-- Follows the other person's language (English / Sinhala / Tamil)
-- Hangs up when the person says goodbye (`end_call`) or on voicemail
+- Places outbound calls and opens by asking how it can help
+- Answers the caller's questions directly (Gemini native audio, `proactivity`
+  off so it always responds)
+- Logs both sides of the call as `[user]` / `[assistant]` lines
+- Follows the caller's language (English / Sinhala / Tamil)
+- Hangs up when the caller says goodbye (`end_call`) or on voicemail
   (`detected_answering_machine`)
-- Persona/name configurable via the `AGENT_NAME` env var
+- Persona/name configurable via the `AGENT_NAME` env var; behaviour in the
+  `INSTRUCTIONS` string in `agent.py`
 
 ## Dev Setup
 

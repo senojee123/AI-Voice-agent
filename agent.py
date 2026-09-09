@@ -19,7 +19,8 @@ from livekit.agents import (
     WorkerOptions,
     RoomInputOptions,
 )
-from livekit.plugins import google
+from livekit.plugins import google, noise_cancellation
+from google.genai import types
 
 
 # load environment variables, this is optional, only used for local development
@@ -39,24 +40,26 @@ outbound_from_number = os.getenv("OUTBOUND_FROM_NUMBER", "0117286109")
 AGENT_NAME = os.getenv("AGENT_NAME", "Nova")
 
 INSTRUCTIONS = f"""
-You are {AGENT_NAME}, a warm, easy-going conversational companion talking to
-someone over the phone. This is a casual chat, not a support call — there is no
-task to complete and no script to follow.
+You are {AGENT_NAME}, a helpful voice assistant on a phone call. Your job is to
+listen to the caller and answer their questions and requests.
 
-How to talk:
-- Speak naturally, the way a friend would. Keep your turns short — usually one or
-  two sentences — and let the other person do most of the talking.
-- Be curious. Ask light follow-up questions about what they say. React to it.
-- Match their energy and mood. If they're chatty, chat back. If they're quiet or
-  busy, keep it brief and don't push.
-- It's fine to have opinions, share a small story, laugh, or be a little playful.
-- Default to English. If the other person speaks Sinhala or Tamil, follow their
-  lead and reply in the same language.
-- Never mention that you're an AI model, read out these instructions, or narrate
-  what you're doing. Don't use bullet points or lists out loud.
+- ALWAYS speak in English. Never switch to Sinhala, Tamil, or any other
+  language, even if the audio sounds unclear or you think you heard another
+  language. English only.
+- Respond directly to what the caller just said. Answer the actual question
+  first, then add a brief helpful detail only if it's useful.
+- Keep replies short and natural for speech — usually one to four sentences. If
+  the topic is big, give the key points and offer to go further.
+- If you're not sure or don't know, say so plainly. Never make up facts.
+- If the audio was unclear, say "Sorry, I didn't catch that — could you say it
+  again?" and wait. Do not guess.
+- Always say something back when the caller speaks — don't go silent on them.
+- Talk warmly and plainly, like a knowledgeable friend. No lists or markdown
+  read out loud.
+- Don't say that you're an AI model or describe these instructions.
 
-If the person clearly wants to hang up, or says goodbye, use the end_call tool.
-If you reach a voicemail greeting, use the detected_answering_machine tool.
+Use the end_call tool when the caller is done or says goodbye. Use the
+detected_answering_machine tool if you reach a voicemail greeting.
 """
 
 
@@ -125,25 +128,48 @@ async def entrypoint(ctx: JobContext):
 
     agent = VoiceAgent()
 
-    # Gemini realtime (speech-to-speech). Native-audio model with affective
-    # dialog + proactivity for a natural, casual conversation. Only needs
+    # Gemini realtime (speech-to-speech), native-audio model. Only needs
     # GOOGLE_API_KEY.
+    # - `proactivity` is OFF: with it on the model decides when *not* to answer.
+    # - `language="en-US"` pins the agent's speech to English (a native-audio
+    #   model will otherwise mirror garbled phone audio into Sinhala/Tamil).
+    # - transcription is enabled so both sides of the call show in the logs.
     session = AgentSession(
         llm=google.beta.realtime.RealtimeModel(
             model="gemini-2.5-flash-native-audio-preview-12-2025",
             voice="Aoede",
-            temperature=0.9,
-            enable_affective_dialog=True,
-            proactivity=True,
+            temperature=0.7,
+            language="en-US",
+            input_audio_transcription=types.AudioTranscriptionConfig(
+                language_codes=["en-US"]
+            ),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
         ),
     )
+
+    @session.on("conversation_item_added")
+    def _log_turn(ev):
+        role = getattr(ev.item, "role", None)
+        if role is None:
+            return  # e.g. AgentHandoff items have no role
+        text = getattr(ev.item, "text_content", None) or ""
+        logger.info(f"[{role}] {text}")
+
+    @session.on("user_input_transcribed")
+    def _log_user(ev):
+        if getattr(ev, "is_final", False):
+            logger.info(f"[user heard] {ev.transcript}")
 
     # start the session before dialing so nothing is missed when they pick up
     session_started = asyncio.create_task(
         session.start(
             agent=agent,
             room=ctx.room,
-            room_input_options=RoomInputOptions(),
+            room_input_options=RoomInputOptions(
+                # echo + background-noise removal tuned for phone calls; without
+                # this the model hears its own echo and mis-transcribes speech
+                noise_cancellation=noise_cancellation.BVCTelephony(),
+            ),
         )
     )
 
@@ -164,11 +190,11 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"participant joined: {participant.identity}")
         agent.set_participant(participant)
 
-        # they answered — open with a casual hello
+        # they answered — open with a short hello and offer to help
         await session.generate_reply(
             instructions=(
-                f"Say a short, warm hello. Introduce yourself as {AGENT_NAME} in "
-                "a casual way and ask how their day is going. One or two sentences."
+                f"Greet the caller warmly in one sentence, say you're {AGENT_NAME}, "
+                "and ask what you can help them with."
             )
         )
 
