@@ -65,6 +65,19 @@ To change the agent's personality, edit `INSTRUCTIONS` near the top of `agent.py
 To change the voice, edit `voice=` in `agent.py` (Gemini voices: `Aoede`, `Puck`,
 `Charon`, `Kore`, `Fenrir`, `Leda`, `Orus`, `Zephyr`, ...).
 
+### Web console (click-to-call)
+
+A one-page UI with a call button. It talks to a small local server that creates
+the dispatch — the LiveKit key/secret stay on the server, never in the browser.
+
+```powershell
+python agent.py dev      # window 1 — the agent worker
+python server.py         # window 2 — the web console
+```
+
+Open **http://localhost:8080**, optionally edit the number, click the green
+phone. The button turns red while the call is live; click again to hang up.
+
 ### Placing a call from your machine (Windows / PowerShell)
 
 **1. Start the worker** and leave it running (one window):
