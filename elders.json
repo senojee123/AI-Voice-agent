@@ -1,0 +1,29 @@
+{
+  "0757211075": {
+    "name": "Senojee",
+    "preferred_language": "English",
+    "medicines": [
+      { "name": "Amlodipine", "time": "8:00 AM", "notes": "for blood pressure, after breakfast" },
+      { "name": "Metformin", "time": "8:00 PM", "notes": "for diabetes, after dinner" }
+    ],
+    "meals": ["breakfast", "lunch", "dinner"],
+    "hobbies": ["gardening", "listening to old Sinhala songs"],
+    "family": [
+      { "relation": "daughter", "name": "Nilmini", "notes": "calls every Sunday" }
+    ],
+    "notes": "Lives alone, enjoys talking about her garden. Slightly hard of hearing, speak clearly."
+  },
+  "0740525967": {
+    "name": "Raja",
+    "preferred_language": "English",
+    "medicines": [
+      { "name": "Atorvastatin", "time": "9:00 PM", "notes": "for cholesterol, after dinner" }
+    ],
+    "meals": ["breakfast", "lunch", "dinner"],
+    "hobbies": ["watching cricket", "reading newspapers"],
+    "family": [
+      { "relation": "son", "name": "Dilshan", "notes": "lives abroad, calls occasionally" }
+    ],
+    "notes": "Enjoys discussing cricket scores."
+  }
+}
