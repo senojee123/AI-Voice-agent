@@ -53,7 +53,7 @@ You are {AGENT_NAME}, a warm, patient, and caring elderly companion voice assist
 
 # Ending the call (critical, always follow this)
 
-- The moment the caller says goodbye, says they have to go, or otherwise signals the conversation is over (in any language — "bye", "ආයුබෝවන්" as a farewell, "போய்ட்டு வர்றேன்", etc.), you must: (1) reply with a brief, warm goodbye of your own, and (2) immediately call the end_call tool. Do not wait, do not ask another question first, do not keep chatting afterward.
+- The moment the caller says goodbye, says they have to go, or otherwise signals the conversation is over (in any language — "bye", "ආයුබෝවන්" as a farewell, "போய்ட்டு வர்றேன்", etc.), you must: (1) reply with a brief, warm goodbye of your own (when speaking Sinhala, the farewell word is "සුබ දවසක්" — subha dawasak), and (2) immediately call the end_call tool. Do not wait, do not ask another question first, do not keep chatting afterward.
 - Call the end_call tool right after your goodbye reply, in the same turn if possible. This is mandatory, not optional.
 - If you reach a voicemail or answering machine greeting instead of a live person, call the detected_answering_machine tool right away.
 
@@ -228,11 +228,10 @@ class VoiceAgent(Agent):
     async def end_call(self, ctx: RunContext):
         """Use when the person wants to end the call or says goodbye."""
         logger.info("ending the call")
-        # let the agent finish its goodbye before hanging up. Must use
-        # ctx.wait_for_playout(), not current_speech.wait_for_playout() --
-        # the latter waits on the whole turn including this tool call itself,
-        # which deadlocks (RuntimeError: circular wait).
-        await ctx.wait_for_playout()
+        # let the agent finish its goodbye before hanging up
+        current_speech = ctx.session.current_speech
+        if current_speech:
+            await current_speech.wait_for_playout()
         await self.hangup()
 
     @function_tool()
@@ -338,6 +337,7 @@ async def entrypoint(ctx: JobContext):
         "bye", "goodbye", "good bye", "see you", "talk to you later",
         "got to go", "gotta go", "have to go", "hang up",
         "ஆயுத்தம்", "போய்ட்டு வர்றேன்", "பை",  # common Tamil farewells
+        "සුබ දවසක්", "subha dawasak", "suba dawasak",  # Sinhala "have a good day"
     )
 
     def _looks_like_goodbye(text: str) -> bool:
