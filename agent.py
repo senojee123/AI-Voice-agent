@@ -46,10 +46,21 @@ AGENT_NAME = os.getenv("AGENT_NAME", "Aria")
 # If that instability reappears, the VAD tuning below may not be enough and
 # falling back to "gemini-2.5-flash-native-audio-preview-12-2025" is the
 # reliable option.
-GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+GEMINI_LIVE_MODEL = "gemini-3.8-live"
 
 INSTRUCTIONS =f"""
-You are {AGENT_NAME}, a warm, patient, and caring elderly companion voice assistant speaking with older adults over a phone call. Your purpose is to provide friendly conversations, emotional support, daily reminders, and wellbeing assistance.
+You are {AGENT_NAME}, a friendly companion who phones older people for a chat, like a warm neighbour or a favourite grandchild who rings up to see how they are. You are talking on a phone call, not writing. Sound like a real person: relaxed, kind, a little playful, never like a customer-service agent or a health worker running through a form.
+
+# How to sound natural (very important)
+
+- Talk the way people actually talk on the phone: contractions ("I'm", "that's", "didn't"), short sentences, and small natural reactions like "oh", "aww", "ha, really?", "oh that's lovely", "hmm, I see".
+- Never use formal or scripted phrases such as "How may I assist you", "I understand your concern", "Thank you for sharing that", "Is there anything else I can help with", or "As an AI". Don't summarise what they just said back to them like a report.
+- Don't announce what you're doing ("Now I will remind you about your medicine"). Slip reminders into the chat the way a friend would: "Oh, before I forget, did you have your tablet after breakfast?"
+- Vary your replies. Don't start every turn with the same word or the same reaction, and don't end every turn with a question. Sometimes just share a thought or a small story, or react and let them carry on.
+- Show you remember things about them (their garden, the cricket, their daughter) and bring them up casually, not as a list.
+- Match their energy. If they're chatty, chat back; if they're quiet or tired, be gentler and slower.
+- A little humour and warmth is good. Never be over-the-top cheerful when they're feeling low.
+- Keep it short: usually one or two sentences. Let them do most of the talking.
 
 # Ending the call (critical, always follow this)
 
@@ -68,14 +79,10 @@ You are {AGENT_NAME}, a warm, patient, and caring elderly companion voice assist
 
 # Conversation style
 
-- Speak warmly and patiently like a caring family member or trusted companion.
-- Be respectful when talking with elderly users.
-- Use simple words and avoid complicated explanations.
-- Speak slowly and clearly.
-- Give the caller enough time to respond.
+- Be warm, patient and respectful, like a caring family member, but relaxed, not stiff.
+- Use simple everyday words and avoid complicated explanations.
+- Speak slowly and clearly, and give them plenty of time to respond.
 - Never interrupt the caller.
-- Do not sound robotic or overly formal.
-- Keep replies short and natural for voice conversations, usually one to four sentences.
 - Ask only one question at a time.
 - This is a conversation, not a checklist or survey. Never just acknowledge what the caller says ("okay", "good") and move straight to your next planned question.
 - Always react to what the caller just told you first: show genuine interest, ask a natural follow-up, or offer comfort, before gently moving on.
@@ -133,6 +140,18 @@ Help users remember:
 - If users mention serious symptoms such as chest pain, difficulty breathing, fainting, or signs of stroke, advise them to contact emergency services or a nearby person immediately.
 - Do not provide emergency medical instructions beyond encouraging professional help.
 
+# Contacting family
+
+You can phone one of the caller's family members (listed under "Family you can call" in the caller details, if any) with the call_family_member tool. The family member is added to this same call, so the caller can talk to them directly.
+
+- Not an emergency (the caller sounds sad, lonely, low, worried, or just misses someone): gently offer first, e.g. "Would you like me to call your daughter Nilmini so you can talk to her?" Only call after they clearly say yes. If they say no, respect it and carry on chatting; do not push or ask again straight away.
+- Emergency (chest pain, difficulty breathing, a fall or injury, fainting, signs of a stroke, confusion, or the caller says they need help urgently): do not wait for permission. Say you are calling their family right now, then call call_family_member with urgent=true. Also tell the caller to call the ambulance on 1990, or ask someone nearby for help.
+- Before calling the tool, say one short sentence such as "One moment, I'm calling her now", because the call takes some time to connect.
+- Pass `reason` as one plain sentence describing why you are calling (e.g. "Raja is feeling very lonely today and would like to talk").
+- If the tool says the family member did not answer, tell the caller kindly, stay with them, and offer to try again or call someone else. In an emergency, try the next family member who has a number.
+- When the tool says the family member has answered, briefly tell both of them why you called (use the reason), then call leave_call so they can talk privately. Do not say goodbye to the caller and do not call end_call.
+- Never call a family member the caller has not been told about, and never invent a family member or number.
+
 # Memory and personalization
 
 - Remember user preferences and conversation context when available.
@@ -186,6 +205,10 @@ def build_elder_context(profile: dict[str, Any]) -> str:
     if family := profile.get("family"):
         fam_lines = "; ".join(f"{f['relation']} {f['name']} ({f.get('notes', '')})" for f in family)
         lines.append(f"Family: {fam_lines}.")
+        callable_family = [f for f in family if f.get("phone")]
+        if callable_family:
+            names = "; ".join(f"{f['relation']} {f['name']}" for f in callable_family)
+            lines.append(f"Family you can call with call_family_member: {names}.")
     if notes := profile.get("notes"):
         lines.append(f"Additional notes: {notes}")
     return "\n".join(lines)
@@ -216,6 +239,19 @@ class VoiceAgent(Agent):
         super().__init__(instructions=instructions)
         self.elder_profile = elder_profile
         self.participant: rtc.RemoteParticipant | None = None
+        # set once a family member is being dialed into the call; the
+        # goodbye safety nets must not delete the room while this is true
+        self.handoff_in_progress = False
+
+    def _find_family_member(self, who: str) -> dict[str, Any] | None:
+        """Match a family member with a phone number by relation or name."""
+        who = who.strip().lower()
+        for member in (self.elder_profile or {}).get("family", []):
+            if not member.get("phone"):
+                continue
+            if who in (member.get("relation", "").lower(), member.get("name", "").lower()):
+                return member
+        return None
 
     def set_participant(self, participant: rtc.RemoteParticipant):
         self.participant = participant
@@ -236,6 +272,71 @@ class VoiceAgent(Agent):
         if current_speech:
             await current_speech.wait_for_playout()
         await self.hangup()
+
+    @function_tool()
+    async def call_family_member(
+        self, ctx: RunContext, family_member: str, reason: str, urgent: bool = False
+    ):
+        """Phone one of the caller's family members and add them to this call.
+
+        Use it when the caller agrees to be connected to family, or right away
+        in an emergency.
+
+        Args:
+            family_member: The relation (e.g. "daughter") or first name of the family member to call.
+            reason: One plain sentence on why you are calling them.
+            urgent: True for an emergency (injury, chest pain, breathing trouble, stroke signs, fall).
+        """
+        member = self._find_family_member(family_member)
+        if member is None:
+            logger.info(f"call_family_member: no callable family member matching {family_member!r}")
+            return "There is no family member by that name with a phone number on file. Do not make one up."
+
+        number = normalize_number(member["phone"])
+        logger.info(f"calling {member['relation']} {member['name']} at {number} (urgent={urgent}): {reason}")
+        self.handoff_in_progress = True
+        job_ctx = get_job_context()
+        try:
+            await job_ctx.api.sip.create_sip_participant(
+                api.CreateSIPParticipantRequest(
+                    room_name=job_ctx.room.name,
+                    sip_trunk_id=outbound_trunk_id,
+                    sip_call_to=number,
+                    sip_number=outbound_from_number,
+                    participant_identity=f"family-{number}",
+                    wait_until_answered=True,
+                )
+            )
+        except api.TwirpError as e:
+            self.handoff_in_progress = False
+            logger.error(
+                f"could not reach {member['name']}: {e.message}, "
+                f"SIP status: {e.metadata.get('sip_status_code')} {e.metadata.get('sip_status')}"
+            )
+            return (
+                f"{member['name']} did not answer or could not be reached. Tell the caller kindly, "
+                "stay with them, and offer to try again or call someone else."
+            )
+
+        return (
+            f"{member['name']} ({member['relation']}) has answered and is now on the call. Briefly tell both "
+            f"of them why you called: {reason}. Then call leave_call so they can talk."
+        )
+
+    @function_tool()
+    async def leave_call(self, ctx: RunContext):
+        """Leave the call after a family member has joined, so they can talk privately.
+
+        Only use after call_family_member reports that the family member answered.
+        This does not end the call for the others.
+        """
+        current_speech = ctx.session.current_speech
+        if current_speech:
+            await current_speech.wait_for_playout()
+        logger.info("family member connected, agent leaving the room (call stays up)")
+        # shutdown disconnects the agent but, unlike hangup(), leaves the room
+        # and the other participants in place
+        get_job_context().shutdown(reason="handed off to family")
 
     @function_tool()
     async def detected_answering_machine(self, ctx: RunContext):
@@ -351,7 +452,7 @@ async def entrypoint(ctx: JobContext):
     def _maybe_end_on_goodbye(ev):
         if not getattr(ev, "is_final", False):
             return
-        if not _looks_like_goodbye(ev.transcript):
+        if agent.handoff_in_progress or not _looks_like_goodbye(ev.transcript):
             return
 
         async def _end_after_farewell():
@@ -375,7 +476,7 @@ async def entrypoint(ctx: JobContext):
         if getattr(ev.item, "role", None) != "assistant":
             return
         text = getattr(ev.item, "text_content", None) or ""
-        if not _looks_like_goodbye(text):
+        if agent.handoff_in_progress or not _looks_like_goodbye(text):
             return
 
         async def _end_after_own_farewell():
@@ -399,7 +500,12 @@ async def entrypoint(ctx: JobContext):
             room_input_options=RoomInputOptions(
                 # echo + background-noise removal tuned for phone calls; without
                 # this the model hears its own echo and mis-transcribes speech
-                noise_cancellation=noise_cancellation.BVCTelephony(),
+                # set NOISE_CANCELLATION=off to rule it out when debugging choppy audio
+                noise_cancellation=(
+                    None
+                    if os.getenv("NOISE_CANCELLATION", "on").lower() == "off"
+                    else noise_cancellation.BVCTelephony()
+                ),
             ),
         )
     )
@@ -436,12 +542,13 @@ async def entrypoint(ctx: JobContext):
             # they answered — open with a short hello and offer to help
             elder_name = elder_profile.get("name") if elder_profile else None
             greeting_instructions = (
-                f"Greet {elder_name} warmly by name in one sentence, say you're {AGENT_NAME}, "
-                "and ask how they're doing today."
+                f"Say hello to {elder_name} like a friendly acquaintance ringing up for a chat, "
+                f"e.g. \"Hello {elder_name}! It's {AGENT_NAME}. How's your day going?\" "
+                "Keep it to one short, casual sentence or two."
                 if elder_name
                 else (
-                    f"Greet the caller warmly in one sentence, say you're {AGENT_NAME}, "
-                    "and ask what you can help them with."
+                    f"Say hello casually and say it's {AGENT_NAME}, "
+                    "then ask how their day is going. Keep it to one or two short, casual sentences."
                 )
             )
             await session.generate_reply(instructions=greeting_instructions)

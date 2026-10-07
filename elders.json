@@ -9,7 +9,7 @@
     "meals": ["breakfast", "lunch", "dinner"],
     "hobbies": ["gardening", "listening to old Sinhala songs"],
     "family": [
-      { "relation": "daughter", "name": "Nilmini", "notes": "calls every Sunday" }
+      { "relation": "daughter", "name": "Nilmini", "notes": "calls every Sunday", "phone": "0773337651" }
     ],
     "notes": "Lives alone, enjoys talking about her garden. Slightly hard of hearing, speak clearly."
   },
