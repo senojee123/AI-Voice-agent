@@ -1,0 +1,53 @@
+# Web console. ClusterIP only -- public access must go through Imperva WAF
+# (CloudOps) in front of an internal load balancer; never a public LoadBalancer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: voice-agent
+  labels: &labels
+    app: web
+    environment: nprod
+    ApplicationName: elderly-voice-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false   # cluster Gatekeeper policy rejects pods that mount the SA token
+      imagePullSecrets:
+        - name: tcr-pull
+      containers:
+        - name: web
+          image: TCR_HOST/NAMESPACE/voice-agent:0.1   # CHANGE_ME (same image as agent)
+          command: ["python", "server.py"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: agent-env
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: voice-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 8080

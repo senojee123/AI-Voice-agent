@@ -10,6 +10,7 @@ Needs the agent worker running too:  python agent.py dev
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import secrets
@@ -29,6 +30,11 @@ DEFAULT_NUMBER = os.getenv("OUTBOUND_PHONE_NUMBER", "0740525967")
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 PORT = int(os.getenv("PORT", "8080"))
+
+# HTTP basic-auth password for the whole console (any username). Without it
+# anyone who can reach the page can make the SIP trunk dial any number, so set
+# it on every hosted deployment. Unset = no auth, for local use only.
+CONSOLE_PASSWORD = os.getenv("CONSOLE_PASSWORD", "")
 
 
 def _lkapi() -> api.LiveKitAPI:
@@ -120,10 +126,32 @@ async def hangup(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def healthz(request: web.Request) -> web.Response:
+    return web.Response(text="ok")
+
+
+@web.middleware
+async def require_password(request: web.Request, handler):
+    if not CONSOLE_PASSWORD or request.path == "/healthz":
+        return await handler(request)
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Basic "):
+        try:
+            _, _, supplied = base64.b64decode(header[6:]).decode().partition(":")
+        except Exception:
+            supplied = ""
+        if secrets.compare_digest(supplied, CONSOLE_PASSWORD):
+            return await handler(request)
+    return web.Response(
+        status=401, headers={"WWW-Authenticate": 'Basic realm="call console"'}
+    )
+
+
 def build_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[require_password])
     app.add_routes(
         [
+            web.get("/healthz", healthz),
             web.get("/", index),
             web.get("/api/config", config),
             web.post("/api/call", start_call),
@@ -138,4 +166,6 @@ def build_app() -> web.Application:
 if __name__ == "__main__":
     print(f"call console:  http://localhost:{PORT}")
     print(f"dispatching agent '{AGENT_NAME}', default number {DEFAULT_NUMBER}")
+    if not CONSOLE_PASSWORD:
+        print("WARNING: CONSOLE_PASSWORD is not set - the console is open to anyone who can reach it")
     web.run_app(build_app(), host="0.0.0.0", port=PORT)

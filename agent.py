@@ -202,6 +202,9 @@ def normalize_number(number: str) -> str:
         number = "0" + number[3:]
     elif number.startswith("94") and len(number) == 11:
         number = "0" + number[2:]
+    elif len(number) == 9 and number.isdigit():
+        # national significant number typed without the leading 0
+        number = "0" + number
     return number
 
 

@@ -1,0 +1,33 @@
+# Outbound-caller worker. No Service: it only makes outbound connections
+# (LiveKit, Gemini), which must go out through the Centralized NAT Gateway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: voice-agent
+  labels: &labels
+    app: agent
+    environment: nprod
+    ApplicationName: elderly-voice-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false   # cluster Gatekeeper policy rejects pods that mount the SA token
+      imagePullSecrets:
+        - name: tcr-pull
+      containers:
+        - name: agent
+          image: TCR_HOST/NAMESPACE/voice-agent:0.1   # CHANGE_ME
+          command: ["python", "agent.py", "start"]
+          envFrom:
+            - secretRef:
+                name: agent-env
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "2", memory: 3Gi }

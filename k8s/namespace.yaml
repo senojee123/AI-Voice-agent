@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: voice-agent
+  # Dialog's mandatory tags -- fill in real values (annotations/labels as your TKE setup requires)
+  labels:
+    environment: nprod            # nprod | prod
+    projectname: CHANGE_ME
+    Owner: CHANGE_ME
+    ApplicationName: elderly-voice-agent
+    Department: CHANGE_ME
+    CxoName: CHANGE_ME
+    Budgetcode: CHANGE_ME
+    Classification: CHANGE_ME     # MCJ | CJ | NCJ | C1 | C2
